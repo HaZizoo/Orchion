@@ -1,15 +1,26 @@
 export type MessageRole = 'user' | 'agent'
 
-export type ToolStatus = 'completed' | 'running' | 'failed'
+/** Lifecycle of a single assistant message. Streams move `streaming → complete`. */
+export type MessageStatus = 'streaming' | 'complete' | 'stopped' | 'error'
+
+/**
+ * `running` while the tool is in flight, `completed` on success.
+ * `cancelled` marks a tool that was interrupted by an aborted stream.
+ */
+export type ToolStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
+export type JsonRecord = { [key: string]: JsonValue }
 
 /** A single agent tool invocation rendered inline as a collapsible card. */
 export interface ToolExecution {
   action: string
   status: ToolStatus
+  /** Reported execution time, not including client-side streaming latency. */
   durationMs: number
   summary?: string
-  input?: string
-  output?: string
+  input?: JsonRecord
+  output?: JsonRecord
 }
 
 export interface Message {
@@ -18,6 +29,7 @@ export interface Message {
   content: string
   /** Display-only timestamp, e.g. "09:41". */
   timestamp: string
+  status: MessageStatus
   tool?: ToolExecution
 }
 

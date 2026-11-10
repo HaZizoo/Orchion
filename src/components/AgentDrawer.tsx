@@ -1,5 +1,6 @@
 import { Braces, FileText, ListChecks, Sparkles, Terminal, Wrench, X } from 'lucide-react'
 import type { Artifact, ArtifactKind, Session } from '../types'
+import { CopyButton } from './CopyButton'
 
 const KIND_META: Record<ArtifactKind, { icon: typeof FileText; label: string }> = {
   summary: { icon: FileText, label: 'summary' },
@@ -11,6 +12,9 @@ const KIND_META: Record<ArtifactKind, { icon: typeof FileText; label: string }> 
 function ArtifactCard({ artifact }: { artifact: Artifact }) {
   const { icon: Icon, label } = KIND_META[artifact.kind]
   const isCode = artifact.kind === 'code' || artifact.kind === 'schema'
+  const copyValue = [artifact.body, artifact.items?.map((item) => `- ${item}`).join('\n')]
+    .filter(Boolean)
+    .join('\n\n')
 
   return (
     <li className="animate-fade-up rounded-xl border border-line bg-panel">
@@ -22,9 +26,12 @@ function ArtifactCard({ artifact }: { artifact: Artifact }) {
           <p className="truncate text-[12.5px] font-medium text-ink">{artifact.title}</p>
           <p className="mt-0.5 truncate font-mono text-[10px] text-ink-dim">{artifact.meta}</p>
         </div>
-        <span className="shrink-0 rounded border border-line px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-ink-dim">
-          {label}
-        </span>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-ink-dim">
+            {label}
+          </span>
+          <CopyButton value={copyValue} label={`Copy ${artifact.title}`} />
+        </div>
       </div>
 
       <div className="px-3 py-2.5">
@@ -116,8 +123,8 @@ export function AgentDrawer({ session, onClose }: AgentDrawerProps) {
         <div className="shrink-0 border-t border-line px-4 py-3">
           <p className="flex items-start gap-2 text-[10.5px] leading-relaxed text-ink-dim">
             <Sparkles className="mt-px size-3 shrink-0 text-accent-soft" aria-hidden="true" />
-            Artifacts are mocked in Phase 1. Tool execution and artifact streaming arrive with the
-            agent runtime.
+            Artifacts land here as each tool settles. The agent runs on the local transport until
+            Phase 3 wires the model.
           </p>
         </div>
       </aside>

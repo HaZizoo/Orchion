@@ -1,7 +1,7 @@
 import { Sparkles } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import type { Message } from '../types'
-import { MessageBubble, TypingIndicator } from './MessageBubble'
+import { MessageBubble } from './MessageBubble'
 
 const SUGGESTIONS = [
   '/summarize this thread',
@@ -11,20 +11,38 @@ const SUGGESTIONS = [
 
 interface MessageListProps {
   messages: Message[]
-  isThinking: boolean
 }
 
-export function MessageList({ messages, isThinking }: MessageListProps) {
+export function MessageList({ messages }: MessageListProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
   const endRef = useRef<HTMLDivElement>(null)
+  const isPinned = useRef(true)
+
+  // Follow the stream, but stop hijacking the viewport once the reader scrolls up.
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+
+    function handleScroll() {
+      if (!element) return
+      const distance = element.scrollHeight - element.scrollTop - element.clientHeight
+      isPinned.current = distance < 96
+    }
+
+    element.addEventListener('scroll', handleScroll, { passive: true })
+    return () => element.removeEventListener('scroll', handleScroll)
+  }, [])
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages.length, isThinking])
+    if (isPinned.current) {
+      endRef.current?.scrollIntoView({ block: 'end' })
+    }
+  }, [messages])
 
-  const isEmpty = messages.length === 0 && !isThinking
+  const isEmpty = messages.length === 0
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-y-auto">
+    <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto">
       <div
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(139,135,249,0.07),transparent_55%)]"
         aria-hidden="true"
@@ -38,8 +56,8 @@ export function MessageList({ messages, isThinking }: MessageListProps) {
             </span>
             <h2 className="mt-4 text-lg font-semibold tracking-tight text-ink">Start a new thread</h2>
             <p className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-ink-dim">
-              Ask the agent to summarize, extract tasks or review code. Responses are mocked until the
-              backend lands in Phase 2.
+              Ask the agent to summarize, extract tasks or review code. Replies stream token by token
+              from the local transport; the model arrives in Phase 3.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-1.5">
               {SUGGESTIONS.map((suggestion) => (
@@ -57,7 +75,6 @@ export function MessageList({ messages, isThinking }: MessageListProps) {
             {messages.map((message) => (
               <MessageBubble key={message.id} message={message} />
             ))}
-            {isThinking && <TypingIndicator />}
           </ul>
         )}
 

@@ -5,6 +5,7 @@ import { StatusDot } from './StatusDot'
 interface ChatHeaderProps {
   session: Session
   isDrawerOpen: boolean
+  isStreaming: boolean
   onToggleDrawer: () => void
   onOpenSidebar: () => void
 }
@@ -12,6 +13,7 @@ interface ChatHeaderProps {
 export function ChatHeader({
   session,
   isDrawerOpen,
+  isStreaming,
   onToggleDrawer,
   onOpenSidebar,
 }: ChatHeaderProps) {
@@ -37,7 +39,8 @@ export function ChatHeader({
             </span>
           </div>
           <p className="truncate text-[11.5px] text-ink-dim">
-            {session.messages.length} {session.messages.length === 1 ? 'message' : 'messages'} · mock data
+            {session.messages.length} {session.messages.length === 1 ? 'message' : 'messages'} ·{' '}
+            {isStreaming ? 'streaming now' : 'saved locally'}
           </p>
         </div>
       </div>
@@ -46,8 +49,7 @@ export function ChatHeader({
         <div className="flex items-center gap-2 rounded-full border border-live/25 bg-live/[0.07] px-2.5 py-1.5">
           <StatusDot />
           <span className="whitespace-nowrap text-[11px] font-medium text-live">
-            Agent Status: Online
-            <span className="hidden text-live/60 sm:inline"> (Mock Mode)</span>
+            Agent Status: Streaming Engine Ready
           </span>
         </div>
 

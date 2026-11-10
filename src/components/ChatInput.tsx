@@ -1,13 +1,20 @@
-import { Send, Zap } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Send, Square, Zap } from 'lucide-react'
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import { quickActions } from '../data/mockSessions'
+
+export interface ChatInputHandle {
+  /** Clears the draft and puts the caret back in the composer. */
+  focusAndClear: () => void
+}
 
 interface ChatInputProps {
   onSend: (content: string) => void
-  isBusy: boolean
+  onStop: () => void
+  isStreaming: boolean
+  ref?: Ref<ChatInputHandle>
 }
 
-export function ChatInput({ onSend, isBusy }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, isStreaming, ref }: ChatInputProps) {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -19,9 +26,16 @@ export function ChatInput({ onSend, isBusy }: ChatInputProps) {
     textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`
   }, [value])
 
+  useImperativeHandle(ref, () => ({
+    focusAndClear() {
+      setValue('')
+      textareaRef.current?.focus()
+    },
+  }), [])
+
   function submit() {
     const trimmed = value.trim()
-    if (!trimmed || isBusy) return
+    if (!trimmed || isStreaming) return
     onSend(trimmed)
     setValue('')
     textareaRef.current?.focus()
@@ -32,7 +46,7 @@ export function ChatInput({ onSend, isBusy }: ChatInputProps) {
     textareaRef.current?.focus()
   }
 
-  const canSend = value.trim().length > 0 && !isBusy
+  const canSend = value.trim().length > 0 && !isStreaming
 
   return (
     <div className="shrink-0 border-t border-line bg-void/85 px-3 pb-3 pt-2.5 backdrop-blur sm:px-5 sm:pb-4">
@@ -75,19 +89,34 @@ export function ChatInput({ onSend, isBusy }: ChatInputProps) {
                   submit()
                 }
               }}
-              placeholder="Ask the agent to do something…"
+              placeholder={
+                isStreaming ? 'Streaming — press Stop to cancel…' : 'Ask the agent to do something…'
+              }
               spellCheck={false}
               className="max-h-50 min-h-9 flex-1 resize-none bg-transparent px-2 py-2 text-[13.5px] leading-relaxed text-ink placeholder:text-ink-dim/80 focus:outline-none"
             />
-            <button
-              type="submit"
-              disabled={!canSend}
-              aria-label="Send message"
-              className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-accent px-3 text-[12.5px] font-semibold text-void transition hover:bg-accent-soft active:translate-y-px disabled:cursor-not-allowed disabled:bg-raised disabled:text-ink-dim"
-            >
-              <Send className="size-3.5" aria-hidden="true" />
-              <span className="hidden sm:inline">Send</span>
-            </button>
+
+            {isStreaming ? (
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="Stop generating"
+                className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 text-[12.5px] font-semibold text-amber-300 transition hover:border-amber-400/60 hover:bg-amber-400/15 active:translate-y-px"
+              >
+                <Square className="size-3.5 fill-current" aria-hidden="true" />
+                <span className="hidden sm:inline">Stop</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!canSend}
+                aria-label="Send message"
+                className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-accent px-3 text-[12.5px] font-semibold text-void transition hover:bg-accent-soft active:translate-y-px disabled:cursor-not-allowed disabled:bg-raised disabled:text-ink-dim"
+              >
+                <Send className="size-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Send</span>
+              </button>
+            )}
           </div>
         </form>
 
@@ -97,7 +126,7 @@ export function ChatInput({ onSend, isBusy }: ChatInputProps) {
             <kbd className="font-mono text-ink-dim/90">Shift + Enter</kbd> for a new line
           </p>
           <p className="hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-dim/70 sm:block">
-            {isBusy ? 'agent responding' : 'mock mode'}
+            {isStreaming ? 'streaming' : 'engine ready'}
           </p>
         </div>
       </div>

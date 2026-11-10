@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, ShieldCheck, X } from 'lucide-react'
+import { MessageSquare, Plus, RotateCcw, ShieldCheck, Trash2, X } from 'lucide-react'
 import type { Session } from '../types'
 import { StatusDot } from './StatusDot'
 
@@ -10,13 +10,17 @@ interface SidebarProps {
   isOpen: boolean
   onSelectSession: (id: string) => void
   onNewSession: () => void
+  onDeleteSession: (id: string) => void
+  onResetDemo: () => void
   onClose: () => void
 }
 
 function previewFor(session: Session): string {
   const last = session.messages.at(-1)
   if (!last) return 'No messages yet'
+  if (last.status === 'streaming') return 'Streaming…'
   const text = last.content.replace(/\s+/g, ' ').trim()
+  if (!text) return 'No messages yet'
   return text.length > 44 ? `${text.slice(0, 44)}…` : text
 }
 
@@ -26,6 +30,8 @@ export function Sidebar({
   isOpen,
   onSelectSession,
   onNewSession,
+  onDeleteSession,
+  onResetDemo,
   onClose,
 }: SidebarProps) {
   return (
@@ -90,12 +96,12 @@ export function Sidebar({
             {sessions.map((session) => {
               const isActive = session.id === activeSessionId
               return (
-                <li key={session.id}>
+                <li key={session.id} className="group relative">
                   <button
                     type="button"
                     onClick={() => onSelectSession(session.id)}
                     aria-current={isActive ? 'true' : undefined}
-                    className={`group w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                    className={`w-full rounded-lg border py-2 pl-2.5 pr-9 text-left transition-colors ${
                       isActive
                         ? 'border-line bg-raised'
                         : 'border-transparent hover:border-line/60 hover:bg-raised/50'
@@ -120,6 +126,16 @@ export function Sidebar({
                         {session.updatedAt}
                       </span>
                     </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => onDeleteSession(session.id)}
+                    aria-label={`Delete ${session.title}`}
+                    title="Delete thread"
+                    className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md text-ink-dim opacity-100 transition hover:bg-void/60 hover:text-red-400 focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" aria-hidden="true" />
                   </button>
                 </li>
               )
@@ -148,10 +164,19 @@ export function Sidebar({
             </div>
             <div className="mt-2.5 flex items-center gap-2">
               <StatusDot />
-              <p className="text-[11px] text-ink-dim">4 tools ready · mock runtime</p>
+              <p className="text-[11px] text-ink-dim">4 tools ready · local stream</p>
             </div>
           </div>
-          <p className="px-1 pt-2 font-mono text-[10px] text-ink-dim/70">Phase 1 · UI sandbox</p>
+
+          <button
+            type="button"
+            onClick={onResetDemo}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-line/70 px-3 py-2 text-[11.5px] font-medium text-ink-dim transition hover:border-line hover:bg-raised hover:text-ink-soft active:translate-y-px"
+          >
+            <RotateCcw className="size-3.5" aria-hidden="true" />
+            Reset Demo Data
+          </button>
+          <p className="px-1 pt-2 font-mono text-[10px] text-ink-dim/70">Phase 2 · streaming engine</p>
         </div>
       </aside>
     </>
