@@ -8,8 +8,8 @@ import type { Artifact, JsonRecord, ToolExecution } from '../types'
  * `token`        → append `delta` to the message body
  * `done`         → close the stream; no further events are emitted
  *
- * Phase 3 replaces the generator body with a Groq completion. The event shape,
- * the abort semantics and every UI consumer stay exactly as they are.
+ * Phase 3 keeps this shape and swaps the token source for a Groq SSE completion,
+ * so no UI consumer had to change.
  */
 export type ChatStreamEvent =
   | { type: 'tool_start'; action: string; summary: string }
@@ -17,30 +17,56 @@ export type ChatStreamEvent =
   | { type: 'token'; delta: string }
   | { type: 'done' }
 
+/** Earlier turns, oldest first, so `/summarize` can act on the real thread. */
+export interface ChatHistoryMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface ChatStreamRequest {
   prompt: string
+  history?: ChatHistoryMessage[]
   signal?: AbortSignal
 }
 
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions'
+export const GROQ_MODEL = 'openai/gpt-oss-120b'
+
 /** Wall-clock latency between `tool_start` and `tool_complete`. */
 const TOOL_LATENCY_MS = 450
-const FIRST_TOKEN_DELAY_MS = 140
-const CHUNK_MIN_MS = 15
-const CHUNK_MAX_MS = 25
-const CHUNK_MIN_CHARS = 2
-const CHUNK_MAX_CHARS = 6
+const MAX_COMPLETION_TOKENS = 1200
+/** Turns kept from history, and the tail of each long turn. */
+const HISTORY_TURNS = 12
+const HISTORY_CHARS = 6000
+const ERROR_DETAIL_CHARS = 220
+
+const BASE_SYSTEM_PROMPT =
+  'You are Orchion, a terse senior engineering assistant inside a developer console. ' +
+  'Answer in GitHub-flavoured Markdown: short paragraphs, bullet lists, and fenced code blocks with a language tag. ' +
+  'Be concrete and skip filler. Never claim to have run tools, read files, or written artifacts — the console ' +
+  'reports those separately.'
+
+const MISSING_KEY_MESSAGE =
+  "Groq isn't connected yet: `VITE_GROQ_API_KEY` is not set. Add it to `.env.local` in the project root " +
+  '(for example `VITE_GROQ_API_KEY=…`) and restart `npm run dev` — Vite only reads env files at startup.'
+
+const UNREACHABLE_MESSAGE =
+  "Couldn't reach Groq — the request failed before any tokens arrived. Check your connection and send again."
 
 interface ToolPlan {
   action: string
-  /** Shown while the tool is running, before the real summary exists. */
+  /** Shown while the tool is running, before the real answer exists. */
   runningSummary: string
   summary: string
   durationMs: number
   input: JsonRecord
   output: JsonRecord
   artifact: Artifact
-  response: string
+  /** Appended to the prompt as a system instruction before the live stream. */
+  instruction: string
 }
+
+type GroqMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
 function abortError(): DOMException {
   return new DOMException('The response stream was aborted.', 'AbortError')
@@ -94,6 +120,10 @@ function summarizePlan(): ToolPlan {
     runningSummary: 'Condensing the thread…',
     summary: 'Condensed the active thread into 5 bullets and 3 action items.',
     durationMs,
+    instruction:
+      'Summarize the conversation above for the engineer who wrote it. Lead with a five-bullet digest of the ' +
+      'actual claims or decisions, then list the open action items. Quote nothing that is not in the thread; ' +
+      'if the thread is empty, ask for the material to summarize.',
     input: { source: 'active_thread', target_length: 120, tone: 'technical' },
     output: {
       bullets: 5,
@@ -117,18 +147,6 @@ function summarizePlan(): ToolPlan {
         'The seminar angle: lead with FLP, close with partial synchrony.',
       ],
     },
-    response: `Summarized. The condense pass returned five bullets and three action items, and both are in the Action Log.
-
-The argument, stripped down:
-
-- Consensus is cheap while the network behaves. Everything after that is the price of links that lie.
-- Quorum overlap — not message count — is what makes Paxos and Raft safe.
-- Raft wins on operational legibility, not throughput: leader election is inspectable.
-- FLP only bites under full asynchrony with a crash fault, so production systems buy liveness with timeouts and leases.
-
-For the 11:00 seminar, lead with the FLP point and use Raft as the escape hatch. The first action item is the only one with a deadline attached.
-
-This reply came from the local streaming engine, not a model. Phase 3 swaps the token source for Groq and this state machine stays exactly the same.`,
   }
 }
 
@@ -140,6 +158,10 @@ function extractTasksPlan(): ToolPlan {
     runningSummary: 'Scanning for action items…',
     summary: 'Extracted 3 action items with 0.93 confidence.',
     durationMs,
+    instruction:
+      'Extract every action item from the conversation above as an ordered checklist. Each line must start with ' +
+      '"1." style numbering and name the concrete next move. Put the same checklist in a fenced ```md block. ' +
+      'If nothing is actionable, say so in one sentence.',
     input: { source: 'active_thread', format: 'checklist', dedupe: true },
     output: {
       items: 3,
@@ -158,21 +180,6 @@ function extractTasksPlan(): ToolPlan {
         'Confirm with the TA whether FLP is examined as a proof or a statement.',
       ],
     },
-    response: `Three action items, ordered by what unblocks the rest.
-
-1. Re-read \`§4.2\` on quorum overlap — it is the section examiners probe.
-2. Write two paragraphs comparing Raft election timeouts with Paxos prepare/accept. One page, no diagrams.
-3. Ask the TA whether FLP is examined as a proof or only as a statement.
-
-\`\`\`md
-- [ ] Re-read §4.2 (quorum overlap)
-- [ ] Two paragraphs: election timeouts vs prepare/accept
-- [ ] Confirm FLP exam scope with the TA
-\`\`\`
-
-The checklist is mirrored in the Action Log, so you can tick items off there.
-
-The extractor ran locally against the thread text. No model call was made — Phase 3 replaces the fixtures with a Groq completion that emits the same \`tool_start\` → \`tool_complete\` → \`token\` sequence.`,
   }
 }
 
@@ -184,6 +191,10 @@ function explainCodePlan(): ToolPlan {
     runningSummary: 'Walking the call graph…',
     summary: 'Explained 1 handler and proposed a single-mount fix.',
     durationMs,
+    instruction:
+      'Explain the code or error discussed above. Walk the actual call path, name the root cause in one ' +
+      'sentence, then give a corrected snippet in a fenced block with the right language tag. Keep it under ' +
+      '250 words and do not repeat the original snippet back.',
     input: { path: 'server/middleware/auth.ts', depth: 'call-graph', include_patch: true },
     output: {
       symbols: 3,
@@ -210,26 +221,6 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction) {
   }
 }`,
     },
-    response: `Top to bottom, this is a guard that writes responses and a handler that also writes responses.
-
-\`\`\`ts
-export function requireAuth(req, res, next) {
-  const token = req.headers.authorization
-  if (!token) return res.status(401).json({ error: 'missing token' })
-  req.user = verify(token)
-  next()
-}
-\`\`\`
-
-What actually happens on \`/api/*\`:
-
-- The router mounts the guard a second time, so \`req.user\` is verified twice per request.
-- The first failure writes a 401 and returns. The second failure tries to write again, which is your \`ERR_HTTP_HEADERS_SENT\`.
-- \`verify\` throwing after the response is flushed produces the same error from a different path.
-
-The fix is structural, not defensive: one mount, and let a terminal error handler own the response. The corrected middleware is in the Action Log.
-
-This walkthrough is produced by the Phase 2 local engine; the token cadence matches Phase 3 but the content is fixture data.`,
   }
 }
 
@@ -241,6 +232,9 @@ function genericPlan(): ToolPlan {
     runningSummary: 'Planning the next step…',
     summary: 'Drafted a 3-step plan and attached it to the Action Log.',
     durationMs,
+    instruction:
+      'Answer the latest user message directly. Use the earlier turns as context. If the request needs more ' +
+      'than three steps, give the plan first and stop there.',
     input: { goal: 'active_thread', steps: 3, tools: ['plan_task', 'summarize_text'] },
     output: {
       steps: 3,
@@ -258,21 +252,6 @@ function genericPlan(): ToolPlan {
         'Stream the narrative, then persist the artifact.',
       ],
     },
-    response: `Three moves, then I report back.
-
-1. Plan — split the request into steps I can verify one at a time.
-2. Execute — run the matching tool and stream the result into this thread.
-3. Report — attach the structured artifact so nothing lives only in prose.
-
-\`\`\`ts
-for await (const event of streamChatResponse({ prompt, signal })) {
-  apply(event) // tool_start → tool_complete → token* → done
-}
-\`\`\`
-
-Every tool call above arrives as an event, which is why the Action Log fills in before the first token lands.
-
-This thread is running the Phase 2 transport: an in-process async generator with realistic latencies, not a network call. Phase 3 keeps the event contract and swaps the generator body for a Groq stream, so the UI does not change.`,
   }
 }
 
@@ -289,37 +268,125 @@ function resolvePlan(prompt: string): ToolPlan {
   }
 }
 
-/**
- * Splits text into sub-word chunks, the way a tokenizer would. Rendering the
- * accumulating string means markdown never re-flows from a half-parsed state.
- */
-function chunkText(text: string): string[] {
-  const chunks: string[] = []
-  let cursor = 0
-
-  while (cursor < text.length) {
-    const size = randomInt(CHUNK_MIN_CHARS, CHUNK_MAX_CHARS)
-    chunks.push(text.slice(cursor, cursor + size))
-    cursor += size
-  }
-
-  return chunks
+function readApiKey(): string | null {
+  const key = import.meta.env.VITE_GROQ_API_KEY
+  return typeof key === 'string' && key.trim().length > 0 ? key.trim() : null
 }
 
 /**
- * Streams one assistant turn. The caller owns the message, artifact and error
- * bookkeeping; this generator only orders the events and enforces the timings.
+ * The command is a console affordance, not something the model should answer
+ * literally, so the leading slash token is stripped from the user turn.
+ */
+function buildMessages(
+  prompt: string,
+  plan: ToolPlan,
+  history: ChatHistoryMessage[],
+): GroqMessage[] {
+  const messages: GroqMessage[] = [{ role: 'system', content: BASE_SYSTEM_PROMPT }]
+
+  if (plan.instruction) messages.push({ role: 'system', content: plan.instruction })
+
+  for (const turn of history.slice(-HISTORY_TURNS)) {
+    const content = turn.content.trim()
+    if (content.length > 0) messages.push({ role: turn.role, content: content.slice(-HISTORY_CHARS) })
+  }
+
+  const cleaned = prompt.replace(/^\/[a-z-]+\s*/i, '').trim()
+  messages.push({ role: 'user', content: cleaned || 'Apply the requested action to this conversation.' })
+
+  return messages
+}
+
+type SseChunk = { type: 'delta'; delta: string } | { type: 'error'; message: string }
+
+/**
+ * Parses one SSE line. Groq streams OpenAI-style `data: {...}` payloads and
+ * terminates with `data: [DONE]`. Reasoning deltas (`delta.reasoning`) are
+ * deliberately ignored: the console shows the answer, not the trace.
+ */
+function parseSseLine(line: string): SseChunk | null {
+  if (!line.startsWith('data:')) return null
+
+  const payload = line.slice(5).trim()
+  if (payload.length === 0 || payload === '[DONE]') return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payload)
+  } catch {
+    return null
+  }
+
+  const chunk = parsed as {
+    error?: { message?: string }
+    choices?: Array<{ delta?: { content?: string | null } }>
+  }
+
+  if (chunk.error?.message) return { type: 'error', message: chunk.error.message }
+
+  const delta = chunk.choices?.[0]?.delta?.content
+  return typeof delta === 'string' && delta.length > 0 ? { type: 'delta', delta } : null
+}
+
+async function readErrorDetail(response: Response): Promise<string> {
+  try {
+    const text = await response.text()
+    const compact = text.replace(/\s+/g, ' ').trim()
+    return compact.length > ERROR_DETAIL_CHARS ? `${compact.slice(0, ERROR_DETAIL_CHARS)}…` : compact
+  } catch {
+    return ''
+  }
+}
+
+/** Turns a failed HTTP response into something readable inside the bubble. */
+function httpErrorMessage(status: number, detail: string): string {
+  const suffix = detail.length > 0 ? `\n\nGroq said: \`${detail}\`` : ''
+
+  if (status === 401 || status === 403) {
+    return (
+      `Groq rejected the API key (HTTP ${status}). Update \`VITE_GROQ_API_KEY\` in \`.env.local\` ` +
+      `and restart the dev server. The key must be a Groq API key with access to \`${GROQ_MODEL}\`.` +
+      suffix
+    )
+  }
+
+  if (status === 429) {
+    return (
+      "Groq is rate limiting this key (HTTP 429). Wait a few seconds and send again, or check the key's " +
+      'limits in the Groq console.' +
+      suffix
+    )
+  }
+
+  if (status === 404) {
+    return (
+      `Groq has no model \`${GROQ_MODEL}\` available to this key (HTTP 404). Pick a model the account can ` +
+      'access, or update the GROQ_MODEL constant in `src/services/chatTransport.ts`.' +
+      suffix
+    )
+  }
+
+  return `Groq returned HTTP ${status} before any tokens arrived. Try again in a moment.${suffix}`
+}
+
+/**
+ * Streams one assistant turn: local tool lifecycle first, then the live Groq
+ * completion. The caller owns the message, artifact and error bookkeeping.
  *
- * Aborting `signal` rejects the pending sleep with an `AbortError`, which ends
- * iteration — no partial event is ever emitted after the abort.
+ * `signal` is passed straight into `fetch`, so aborting it closes the socket
+ * instead of waiting for the next chunk. Pre-flight failures (missing key,
+ * 401/403/429) are yielded as a friendly token; failures mid-stream rethrow
+ * after a notice so `App` can mark the message `error` without losing the
+ * tokens already rendered.
  */
 export async function* streamChatResponse({
   prompt,
+  history = [],
   signal,
 }: ChatStreamRequest): AsyncGenerator<ChatStreamEvent, void, void> {
-  const plan = resolvePlan(prompt)
-
   if (signal?.aborted) throw abortError()
+
+  const plan = resolvePlan(prompt)
 
   yield { type: 'tool_start', action: plan.action, summary: plan.runningSummary }
   await wait(TOOL_LATENCY_MS, signal)
@@ -337,11 +404,103 @@ export async function* streamChatResponse({
     artifact: plan.artifact,
   }
 
-  await wait(FIRST_TOKEN_DELAY_MS, signal)
+  const apiKey = readApiKey()
+  if (!apiKey) {
+    yield { type: 'token', delta: MISSING_KEY_MESSAGE }
+    yield { type: 'done' }
+    return
+  }
 
-  for (const delta of chunkText(plan.response)) {
-    await wait(randomInt(CHUNK_MIN_MS, CHUNK_MAX_MS), signal)
-    yield { type: 'token', delta }
+  let response: Response
+  try {
+    response = await fetch(GROQ_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        stream: true,
+        temperature: 0.5,
+        max_completion_tokens: MAX_COMPLETION_TOKENS,
+        messages: buildMessages(prompt, plan, history),
+      }),
+      signal,
+    })
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) throw abortError()
+    yield { type: 'token', delta: UNREACHABLE_MESSAGE }
+    yield { type: 'done' }
+    return
+  }
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response)
+    yield { type: 'token', delta: httpErrorMessage(response.status, detail) }
+    yield { type: 'done' }
+    return
+  }
+
+  const body = response.body
+  if (!body) {
+    yield { type: 'token', delta: 'Groq accepted the request but returned no body. Send it again.' }
+    yield { type: 'done' }
+    return
+  }
+
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let received = false
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      let newline = buffer.indexOf('\n')
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '')
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf('\n')
+
+        const chunk = parseSseLine(line)
+        if (chunk === null) continue
+        if (chunk.type === 'error') throw new Error(chunk.message)
+
+        received = true
+        yield { type: 'token', delta: chunk.delta }
+      }
+    }
+
+    // A final chunk without a trailing newline still carries content.
+    buffer += decoder.decode()
+    const tail = parseSseLine(buffer.replace(/\r$/, ''))
+    if (tail?.type === 'delta') {
+      received = true
+      yield { type: 'token', delta: tail.delta }
+    }
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) throw abortError()
+
+    yield {
+      type: 'token',
+      delta: `\n\nStream interrupted: ${error instanceof Error ? error.message : 'unknown error'}. The partial reply is kept — send again to retry.`,
+    }
+    throw error
+  } finally {
+    // Releasing the lock on an aborted body would throw; cancelling closes it.
+    void reader.cancel().catch(() => undefined)
+  }
+
+  if (!received) {
+    yield {
+      type: 'token',
+      delta: 'The model finished without returning visible text. Try rephrasing the request.',
+    }
   }
 
   yield { type: 'done' }

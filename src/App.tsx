@@ -163,6 +163,14 @@ function App() {
     const sessionId = activeSessionId
     if (!content || controllers.current.has(sessionId)) return
 
+    // The model needs the thread itself, otherwise /summarize has nothing to read.
+    const history = activeSession.messages
+      .filter((message) => message.content.trim().length > 0)
+      .map((message) => ({
+        role: message.role === 'user' ? ('user' as const) : ('assistant' as const),
+        content: message.content,
+      }))
+
     const timestamp = currentTime()
     const userMessage: Message = {
       id: createId(),
@@ -196,7 +204,11 @@ function App() {
 
     void (async () => {
       try {
-        for await (const event of streamChatResponse({ prompt: content, signal: controller.signal })) {
+        for await (const event of streamChatResponse({
+          prompt: content,
+          history,
+          signal: controller.signal,
+        })) {
           switch (event.type) {
             case 'tool_start':
               patchMessage(sessionId, agentMessage.id, (message) => ({

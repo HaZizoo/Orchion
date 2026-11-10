@@ -2,7 +2,7 @@
   "name": "orchion",
   "private": true,
   "version": "0.1.0",
-  "description": "Orchion — real-time chat workspace for a task-executing AI agent (Phase 2: streaming engine).",
+  "description": "Orchion — real-time chat workspace for a task-executing AI agent (Phase 3: live Groq SSE streaming).",
   "type": "module",
   "scripts": {
     "dev": "vite",

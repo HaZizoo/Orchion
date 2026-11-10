@@ -57,7 +57,7 @@ export function MessageList({ messages }: MessageListProps) {
             <h2 className="mt-4 text-lg font-semibold tracking-tight text-ink">Start a new thread</h2>
             <p className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-ink-dim">
               Ask the agent to summarize, extract tasks or review code. Replies stream token by token
-              from the local transport; the model arrives in Phase 3.
+              from Groq as each tool card settles.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-1.5">
               {SUGGESTIONS.map((suggestion) => (

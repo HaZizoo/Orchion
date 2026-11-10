@@ -123,8 +123,8 @@ export function AgentDrawer({ session, onClose }: AgentDrawerProps) {
         <div className="shrink-0 border-t border-line px-4 py-3">
           <p className="flex items-start gap-2 text-[10.5px] leading-relaxed text-ink-dim">
             <Sparkles className="mt-px size-3 shrink-0 text-accent-soft" aria-hidden="true" />
-            Artifacts land here as each tool settles. The agent runs on the local transport until
-            Phase 3 wires the model.
+            Artifacts land here as each tool settles. Prose streams live from Groq; the structured
+            artifact payloads are recorded locally by each tool.
           </p>
         </div>
       </aside>
