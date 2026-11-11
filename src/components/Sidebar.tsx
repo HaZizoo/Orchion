@@ -164,7 +164,7 @@ export function Sidebar({
             </div>
             <div className="mt-2.5 flex items-center gap-2">
               <StatusDot />
-              <p className="text-[11px] text-ink-dim">4 tools ready · live model</p>
+              <p className="text-[11px] text-ink-dim">4 tools · real execution</p>
             </div>
           </div>
 
@@ -176,7 +176,7 @@ export function Sidebar({
             <RotateCcw className="size-3.5" aria-hidden="true" />
             Reset Demo Data
           </button>
-          <p className="px-1 pt-2 font-mono text-[10px] text-ink-dim/70">Phase 3 · live Groq stream</p>
+          <p className="px-1 pt-2 font-mono text-[10px] text-ink-dim/70">Phase 4 · full-stack sync</p>
         </div>
       </aside>
     </>

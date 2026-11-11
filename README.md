@@ -2,242 +2,227 @@
 
 A real-time chat workspace for a task-executing AI agent — built for developers who want to watch the work, not just the answer.
 
-> **Phase 3 — Live Groq SSE streaming.** Replies now come from `openai/gpt-oss-120b` over a real `fetch` + `ReadableStream` SSE connection. Slash commands still render a tool card and push an artifact before the model streams its answer, the amber **Stop** button aborts the socket, and every thread persists to `localStorage`.
+> **Phase 4 — full-stack.** Orchion is now a React client plus an Express API. The Groq key lives only on the server, slash commands execute real tools that inspect the stored transcript (and the npm registry), and every thread is saved to MongoDB against an authenticated user.
 
 ---
 
 ## Stack
 
-| Concern     | Choice                                                  |
-| ----------- | ------------------------------------------------------- |
-| Framework   | React 19                                                |
-| Build tool  | Vite 8                                                  |
-| Language    | TypeScript                                              |
-| Styling     | Tailwind CSS v4 (`@tailwindcss/vite`)                   |
-| Icons       | `lucide-react`                                          |
-| Transport   | Groq Chat Completions (SSE) via `fetch` + `ReadableStream` |
-| Persistence | `localStorage` (versioned, validated on read)           |
-| Linting     | Oxlint (Vite React-TS template default)                 |
+| Concern     | Choice                                                     |
+| ----------- | ---------------------------------------------------------- |
+| Frontend    | React 19 + Vite 8 + TypeScript                             |
+| Styling     | Tailwind CSS v4 (`@tailwindcss/vite`)                      |
+| API         | Node.js + Express 5                                        |
+| Database    | MongoDB via Mongoose 8 (`User`, `Session`, `Message`)      |
+| Model calls | Groq Chat Completions, streamed as SSE through the proxy   |
+| Auth        | Bearer tokens signed with HMAC-SHA256; scrypt passwords    |
+| Linting     | Oxlint                                                     |
 
-## Getting started
+---
+
+## Quick start
+
+**Prerequisites:** Node.js 20+ and a MongoDB server. MongoDB is already running as a Windows service on this machine (`Get-Service MongoDB`). Alternatives:
+
+```bash
+# Docker
+docker run -d --name orchion-mongo -p 27017:27017 mongo:7
+
+# …or point MONGODB_URI at an Atlas cluster
+```
 
 ```bash
 npm install
-cp .env.example .env.local     # then paste your key into VITE_GROQ_API_KEY
-npm run dev                    # http://localhost:5173
-npm run build                  # type-check + production bundle
-npm run lint                   # oxlint
-npm run preview                # serve the production build
+cp server/.env.example server/.env     # PowerShell: Copy-Item server/.env.example server/.env
+# edit server/.env → GROQ_API_KEY=… and AUTH_SECRET=…
+npm run dev                            # API + Vite together
 ```
 
-### Environment
+`npm run dev` starts both processes with `concurrently`:
 
-| Variable             | Where it goes      | Purpose                             |
-| -------------------- | ------------------ | ----------------------------------- |
-| `VITE_GROQ_API_KEY`  | `.env.local` (project root, next to `package.json`) | Bearer token for `api.groq.com` |
+| Process | URL                      | Command            |
+| ------- | ------------------------ | ------------------ |
+| API     | http://localhost:8787    | `npm run dev:server` (`node --watch`) |
+| Web     | http://localhost:5173    | `npm run dev:client` (`vite`)         |
 
-Create the key at [console.groq.com/keys](https://console.groq.com/keys), copy `.env.example` to `.env.local`, and **restart `npm run dev`** — Vite reads env files only at startup, so a key added while the server is running is invisible until it restarts.
+Run them separately in two terminals if you prefer. Vite proxies `/api/*` to the API, so the browser only ever talks to its own origin.
 
-`.env` and `.env.*` are git-ignored (`.env.example` is exempt). On a host, set `VITE_GROQ_API_KEY` in the project's environment settings before building, because `VITE_*` values are inlined at build time.
+### Environment (`server/.env`)
 
-> **Security note:** any `VITE_*` variable is compiled into the browser bundle, so this key is visible to anyone who loads the app. That is acceptable for a local demo, not for a public deployment — production should proxy the request through a server endpoint that holds the key server-side.
+| Variable        | Required | Purpose                                                       |
+| --------------- | -------- | ------------------------------------------------------------- |
+| `GROQ_API_KEY`  | for chat | Groq key ([console.groq.com/keys](https://console.groq.com/keys)). Tools still run without it. |
+| `MONGODB_URI`   | yes      | Defaults to `mongodb://127.0.0.1:27017/orchion`                |
+| `AUTH_SECRET`   | strongly | HMAC key for tokens. If omitted, an ephemeral key is generated and every session dies on restart. |
+| `PORT`          | no       | API port, default `8787`                                       |
+| `GROQ_MODEL`    | no       | Default `openai/gpt-oss-120b`                                  |
+
+Generate a secret:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+The key is **never** prefixed with `VITE_`, never imported by the client, and never logged. `server/.env` is git-ignored; only `server/.env.example` is tracked.
 
 ---
 
 ## Architecture
 
 ```
-src/
-├── App.tsx                    # Stream orchestration, session CRUD, persistence
-├── main.tsx                   # React 19 entrypoint
-├── index.css                  # Tailwind import, theme tokens, keyframes
-├── vite-env.d.ts              # Typed VITE_GROQ_API_KEY
-├── types.ts                   # Message / ToolExecution / Artifact / JSON types
-├── data/
-│   └── mockSessions.ts        # 3 seed threads + quick actions + clone factory
-├── services/
-│   ├── chatTransport.ts       # Event contract, tool plans, Groq SSE parser
-│   └── sessionStorage.ts      # load / save / reset + hydration validation
-└── components/
-    ├── Sidebar.tsx            # Brand, New Session, threads (+ delete), reset
-    ├── ChatHeader.tsx         # Active title, streaming pill, drawer toggle
-    ├── MessageList.tsx        # Transcript, pinned-scroll behaviour, empty state
-    ├── MessageBubble.tsx      # Bubbles, tool card, status pill, copy
-    ├── MessageContent.tsx     # Markdown subset renderer + code blocks
-    ├── ChatInput.tsx          # Composer, slash chips, Send ⇄ Stop
-    ├── AgentDrawer.tsx        # Task Action Log, artifact cards, copy
-    ├── CopyButton.tsx         # Shared clipboard control (1.5s feedback)
-    └── StatusDot.tsx          # Shared pulsing green indicator
+Orchion/
+├── server/
+│   ├── index.js              Express app, Mongo startup, JSON error handler
+│   ├── config.js             dotenv loading + parsed env
+│   ├── db.js                 Mongoose connect / disconnect
+│   ├── models/
+│   │   ├── User.js           guest | account, activeSessionId
+│   │   ├── Session.js        thread + embedded artifacts
+│   │   └── Message.js        turns with optional tool payload
+│   ├── auth/
+│   │   ├── tokens.js         HMAC-SHA256 signed bearer tokens
+│   │   ├── passwords.js      scrypt hashing (Node built-ins)
+│   │   └── middleware.js     requireAuth → req.userId
+│   ├── routes/
+│   │   ├── auth.js           guest, register, login, me
+│   │   ├── sessions.js       thread + message CRUD
+│   │   └── chat.js           SSE proxy + tool orchestration
+│   ├── lib/
+│   │   ├── groq.js           prompt building, upstream SSE parsing, error copy
+│   │   └── validate.js       payload limits and shape checks
+│   └── tools/
+│       ├── transcript.js     term/sentence/code-block analysis
+│       └── index.js          real tool runners
+├── src/
+│   ├── App.tsx               hydration, debounced snapshot sync, boot screen
+│   ├── services/
+│   │   ├── api.ts            guest bootstrap + authorized fetch
+│   │   ├── chatTransport.ts  `/api/chat` SSE parser, same event contract
+│   │   └── sessionStorage.ts sessions API client (no localStorage data)
+│   └── components/           Sidebar, ChatHeader, MessageList, AgentDrawer…
+├── vite.config.ts            `/api` proxy for dev and preview
+└── server/.env.example
 ```
 
-### Layout
-
-A three-pane workspace on desktop: fixed **sidebar** (272px), fluid **transcript**, and a **340px action drawer**. Below `md` the sidebar becomes an overlay; below `lg` the drawer does too.
-
-```
-┌──────────┬────────────────────────────────────┬──────────────┐
-│ Sidebar  │ ChatHeader (streaming pill)        │ AgentDrawer  │
-│          ├────────────────────────────────────┤              │
-│ Threads  │ MessageList (pinned auto-scroll)   │ Artifacts    │
-│  · · · ✕ │   • user bubble                    │   • summary  │
-│          │   • agent bubble + tool card       │   • tasks    │
-│          ├────────────────────────────────────┤   • code     │
-│ Reset    │ ChatInput (Send ⇄ Stop)            │   • schema   │
-└──────────┴────────────────────────────────────┴──────────────┘
-```
+The UI never imports a key or a model endpoint; it knows one transport function and four stream events.
 
 ---
 
-## Streaming transport
+## API
 
-`src/services/chatTransport.ts` is the only place that knows how a reply is produced. It exposes one typed async generator and a frozen event union:
+| Method | Path                                       | Purpose                              |
+| ------ | ------------------------------------------ | ------------------------------------ |
+| GET    | `/api/health`                              | Mongo + Groq status                  |
+| POST   | `/api/auth/guest`                          | Create an isolated guest account     |
+| POST   | `/api/auth/register`                       | Email + password account             |
+| POST   | `/api/auth/login`                          | Issue a token                        |
+| GET    | `/api/auth/me`                             | Current user + active thread         |
+| PATCH  | `/api/auth/me`                             | Remember the active thread           |
+| GET    | `/api/sessions`                            | Threads + messages + active id       |
+| POST   | `/api/sessions`                            | Create (idempotent by `id`)          |
+| GET    | `/api/sessions/:id`                        | One thread with its messages         |
+| PATCH  | `/api/sessions/:id`                        | Rename                               |
+| PUT    | `/api/sessions/:id`                        | Full snapshot sync (upsert messages) |
+| DELETE | `/api/sessions/:id`                        | Delete a thread and its messages     |
+| DELETE | `/api/sessions`                            | Delete every thread (reset helper)   |
+| POST   | `/api/sessions/:id/messages`               | Append a message                     |
+| DELETE | `/api/sessions/:id/messages/:messageId`    | Delete a message                     |
+| POST   | `/api/chat`                                | SSE: tool events + Groq tokens       |
+
+Every route except `/api/health`, `/api/auth/guest`, `/api/auth/register` and `/api/auth/login` requires `Authorization: Bearer <token>`.
+
+### Auth model
+
+- The client calls `/api/auth/me` with any stored token; a 401 triggers one fresh `POST /api/auth/guest`. That keeps the demo usable with no login screen while still giving every browser its own user id.
+- `register` / `login` exist for the account flow and are verified by the API smoke test; a dedicated sign-in UI is still Phase 5.
+- Tokens are `base64url(payload).hmacSHA256` with `sub`, `iat` and a 30-day `exp`. The server never trusts a client-supplied user id — it derives it from the signed token and scopes every query by it.
+- Passwords use `scrypt` with a per-user salt; comparison is constant-time.
+
+### Data model
+
+```
+User     { name, email?, passwordHash?, kind: guest|account, activeSessionId }
+Session  { userId, sessionId, title, model, displayUpdatedAt, artifacts[] }
+Message  { userId, sessionId, messageId, role, content, status, tool?, order }
+```
+
+Indexes: unique `(userId, sessionId)` for threads, unique `(userId, sessionId, messageId)` for messages, `(userId, sessionId, order)` for transcript reads. Artifacts are embedded on the session because they are bounded and always fetched with it.
+
+The client sends a **snapshot** on a 600 ms trailing debounce; `PUT /sessions/:id` upserts messages by id and deletes the ones no longer present, so token-rate updates collapse into one write per pause and deletions survive reloads. `activeSessionId` is stored on the user, not in `localStorage`.
+
+On first run the client seeds the three demo threads through the API. `POST /sessions` is idempotent by client id, which keeps React StrictMode's double boot effect from creating duplicates (it initially did — see the `E11000` note below).
+
+---
+
+## Chat pipeline
+
+```
+React ──POST /api/chat──▶ Express
+                            ├─ 1. resolve slash command
+                            ├─ 2. emit tool_start
+                            ├─ 3. run the real tool (transcript / registry)
+                            ├─ 4. emit tool_complete (+ artifact)
+                            ├─ 5. build messages (system + instruction + history + prompt)
+                            └─ 6. stream Groq SSE → re-emit `token` frames
+```
+
+The event contract is unchanged from Phase 3, so no component changed:
 
 ```ts
 type ChatStreamEvent =
   | { type: 'tool_start'; action: string; summary: string }
-  | { type: 'tool_complete'; tool: ToolExecution; artifact: Artifact }
+  | { type: 'tool_complete'; tool: ToolExecution; artifact?: Artifact }
   | { type: 'token'; delta: string }
   | { type: 'done' }
-
-streamChatResponse({ prompt, history, signal }): AsyncGenerator<ChatStreamEvent>
 ```
 
-| Step | Timing | What the UI does |
-| ---- | ------ | ---------------- |
-| `detectCommand(prompt)` | instant | `/summarize`, `/extract-tasks`, `/explain-code`, else `plan_task` |
-| `tool_start` | immediate | appends an assistant message with a **running** tool card (spinner) |
-| `tool_complete` | +450ms | settles the card (duration, JSON in/out) and prepends the artifact |
-| `POST /openai/v1/chat/completions` | after the tool settles | `stream: true`, so headers return as soon as the model starts |
-| `token` × n | network cadence | appends to `message.content`; markdown re-renders from the accumulated string |
-| `done` | end | marks the message `complete`, stamps `updatedAt` |
+**Abort:** the client passes its `AbortController.signal` into `fetch('/api/chat')`. Closing the response fires `res.on('close')` on the server, which aborts the shared signal — cancelling the in-flight Groq request (or registry lookup) and stopping the SSE writes. The client marks the turn `stopped`; a running tool becomes `cancelled`. Verified by aborting mid-request: the API stayed healthy.
 
-### Request shape
+**Errors** are streamed as text so they render inside the bubble: missing `GROQ_API_KEY`, 401/403, 429, 404, other HTTP statuses, unreachable Groq, mid-stream interruption (sent as a notice followed by an `error` event so the UI keeps the partial reply and marks it `error`).
 
-```ts
-fetch('https://api.groq.com/openai/v1/chat/completions', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-  body: JSON.stringify({
-    model: 'openai/gpt-oss-120b',
-    stream: true,
-    temperature: 0.5,
-    max_completion_tokens: 1200,
-    messages: [system, commandInstruction, ...history, user],
-  }),
-  signal,                         // ← the same controller the Stop button aborts
-})
-```
+### Real tools
 
-`history` is the current thread's turns (last 12, each capped at 6k characters of its tail), so `/summarize` summarises the actual conversation instead of an empty prompt. The command token itself is stripped from the user turn — it is a console affordance, not content — and the matching system instruction ("Summarize the conversation above…") is what makes the command actionable.
+Durations are measured with `performance.now()` around the actual work — no simulated latency.
 
-### SSE parsing
+| Command          | Tool            | What it actually does                                                                 |
+| ---------------- | --------------- | ------------------------------------------------------------------------------------- |
+| `/summarize`     | `summarize_text`| Counts turns/words, ranks sentences by term frequency, returns ranked excerpts + top terms. |
+| `/extract-tasks` | `extract_tasks` | Scans stored turns for checkboxes, TODO/FIXME markers and "should / need to" phrasing; dedupes and scores confidence. |
+| `/explain-code`  | `explain_code`  | Finds fenced code in the thread, detects language/imports, and fetches package metadata from `registry.npmjs.org` (real outbound API call, 5 s timeout). |
+| anything else    | `plan_task`     | Builds a plan from the prompt clauses and the real turn/word count of the thread.      |
 
-The response body is read with `body.getReader()` and a streaming `TextDecoder`. Chunks are buffered and split on `\n`, so a JSON payload that straddles two network chunks is never parsed half-formed:
-
-```ts
-buffer += decoder.decode(value, { stream: true })
-let newline = buffer.indexOf('\n')
-while (newline !== -1) {
-  const line = buffer.slice(0, newline).replace(/\r$/, '')
-  buffer = buffer.slice(newline + 1)
-  // 'data: {...}' → choices[0].delta.content → yield { type: 'token' }
-  newline = buffer.indexOf('\n')
-}
-```
-
-Only `data:` lines carrying `choices[0].delta.content` become tokens. `data: [DONE]` ends the stream, `empty` deltas and `delta.reasoning` (the model's internal trace) are skipped, and a trailing line without a final newline is still flushed. If the stream ends without any visible text, a single explanatory token is yielded instead of an empty bubble.
-
-### Error handling
-
-| Condition | What the user sees |
-| --------- | ------------------ |
-| `VITE_GROQ_API_KEY` missing/blank | Bubble explains where to put the key and that the dev server must restart. No crash, no network call. |
-| HTTP 401 / 403 | "Groq rejected the API key (HTTP 401)…", plus the provider's message |
-| HTTP 429 | "Groq is rate limiting this key…" — wait and resend |
-| HTTP 404 | Model not available to this key, names the model and the constant to change |
-| Other non-2xx | Status code plus a trimmed provider message (220 chars) |
-| Network failure before tokens | "Couldn't reach Groq…" |
-| Failure mid-stream | Appends an interruption notice, then rethrows so the bubble shows the red `error` pill while keeping the tokens already rendered |
-| Abort | Rethrows `AbortError`; the message becomes `stopped`, never `error` |
-
-Pre-flight failures are yielded as ordinary `token` events on purpose: the bubble renders them like any other reply, which keeps the UI contract to four event types.
-
-### AbortController lifecycle
-
-1. `handleSend` creates one `AbortController` per session and stores it in `controllers` (a `Map`, so switching threads never loses the handle).
-2. The generator passes `signal` to `fetch` **and** to a `wait` helper used for the tool latency. Aborting rejects the pending `reader.read()` (or the pending sleep) with a `DOMException('…', 'AbortError')`.
-3. The Stop button calls `handleStop(sessionId)` → `controller.abort()`; the socket closes immediately rather than at the next chunk.
-4. `App` catches the rejection, checks `isAbortError(error) || signal.aborted`, and marks the message `stopped`; a running tool becomes `cancelled` with a "Cancelled by user" summary. Partial tokens already rendered are kept — nothing is rolled back.
-5. The `finally` block cancels the reader, removes the controller and clears the session's streaming flag, which restores the Send button.
-6. Unmount and **Reset Demo Data** abort every live controller, so no request survives the tree.
-
-### Session persistence
-
-`src/services/sessionStorage.ts` owns two versioned keys:
-
-```
-orchion.sessions.v1        Session[]   (messages + artifacts)
-orchion.active-session.v1  string      (active session id)
-```
-
-- **Hydration is defensive.** `loadWorkspace()` returns `null` on first run, missing keys, non-array JSON, corrupt JSON or an empty result — `App` then falls back to `createMockSessions()`. Stored sessions are normalised field by field, so an old or hand-edited payload can't crash the renderer.
-- **Interrupted streams recover.** A persisted `streaming` message is restored as `stopped`, and a `running` tool as `cancelled`; empty assistant rows left by a reload mid-stream are dropped.
-- **Writes are debounced** by 300ms, because tokens update state continuously and `JSON.stringify` on every token would be wasteful. A `pagehide` listener flushes the final state when the tab closes. Quota/private-mode failures are swallowed so the in-memory session keeps working.
-
-### Session management
-
-- **New Session** creates a clean thread, activates it and immediately clears + focuses the composer through an imperative `ChatInputHandle` (no focus effects, no `setState` in an effect).
-- **Delete** is a sibling button per row (not nested inside the row button), and aborts that thread's stream first. Deleting the last thread immediately seeds an empty `New Session N`, so `sessions[0]` — and therefore `activeSession` — is never undefined.
-- **Reset Demo Data** confirms, aborts all streams, clears both keys and reseeds from the fixtures.
-- The first prompt in an empty thread derives the thread title (slash command stripped), so a new session doesn't stay named "New Session 1".
+Each tool returns a structured `input`/`output` JSON payload for the card and writes an artifact (`summary`, `tasks` or `code`) to the Action Log. If a tool fails, the stream still continues to the model and the card reports `failed` without inventing an artifact.
 
 ---
-
-## Interaction details
-
-- **Send ⇄ Stop.** While the active thread is streaming, the primary button becomes an amber *Stop* control wired to the abort path; the composer placeholder and footer mode also change. Other threads can still be read and switched while one streams.
-- **Copy.** `CopyButton` writes to the clipboard, shows a checkmark and the live-region message for **1.5s**, and falls back to a hidden textarea on insecure contexts. It appears on assistant bubbles, fenced code blocks, tool input/output, and artifact cards.
-- **Markdown subset.** `MessageContent` renders fenced code (with a language label and copy button), bullet/ordered lists, `**bold**`, `` `inline code` ``, and paragraphs. An unterminated fence still renders as code, so a stream never flashes raw backticks; content is parsed from the full accumulated string on each token, which keeps line breaks stable.
-- **Pinned scrolling.** `MessageList` follows the stream only while the reader is within 96px of the bottom; scrolling up suspends auto-scroll instead of yanking the viewport.
-- **Tool cards.** The card still reflects a local tool run — action name, reported duration, structured JSON input/output — while the prose above it comes from Groq. The artifact in the Action Log is the plan's fixture payload; the model is instructed not to claim it produced artifacts itself.
-
-### State model
-
-```ts
-sessions: Session[]              // hydrated → localStorage, seeded on first run
-activeSessionId: string
-isDrawerOpen: boolean
-isSidebarOpen: boolean           // mobile overlay only
-streamingSessionIds: string[]    // threads with a live request
-composerRef: ChatInputHandle     // imperative focus/clear
-controllers: Map<string, AbortController>   // ref, one per streaming thread
-latestWorkspace: Workspace       // ref, flushed on pagehide
-```
-
-A message carries `status: 'streaming' | 'complete' | 'stopped' | 'error'`; a tool carries `running | completed | failed | cancelled`. Both are rendered as explicit pills, so a cancelled tool never looks like a success.
-
-### Design tokens
-
-Defined once in `src/index.css` under `@theme`:
-
-- **Surfaces:** `void → shell → panel → raised → hover`
-- **Type:** `ink` / `ink-soft` / `ink-dim`, Inter + JetBrains Mono
-- **Accents:** `accent` violet for agent affordances, `live` green for runtime status, amber for stopped/cancelled, red for failures
-- **Motion:** `fade-up`, `ping-soft`, `dot`, `slide-in`, `caret` (streaming cursor) — looping animations are `motion-safe`
-
----
-
-## Accessibility notes
-
-- Transcript is a labelled `role="log"`; copy feedback is announced through a polite live region.
-- Composer is a real `<form>` with a labelled textarea; icon-only buttons carry `aria-label`.
-- Tool cards are `aria-expanded` disclosures; drawer toggle exposes `aria-pressed` / `aria-controls`.
-- Streaming status is conveyed by text ("streaming", "stopped"), not colour alone.
-- Visible `:focus-visible` ring on every interactive element.
 
 ## Verification
 
-`npm run lint` (Oxlint) and `npm run build` (`tsc -b` + Vite) pass with **zero errors and zero warnings**.
+Run against the live API and MongoDB on this machine:
+
+- **32/32 API checks passed**, covering health, guest auth, 401s, thread CRUD, message append/delete, snapshot replacement, per-user isolation (a second token gets 404 on another user's thread), SSE ordering, real tool payloads, live npm metadata (`express@5.3.0`), client-abort survival, register/login and duplicate-email rejection.
+- **UI:** hydrated 3 threads from MongoDB, ran `/summarize`, rendered a real 25 ms tool card with `3 turns · 166 words`, wrote the artifact to the drawer, and showed the server's `GROQ_API_KEY` guidance.
+- `npm run lint` → 0 warnings / 0 errors; `npm run build` → `tsc -b && vite build` succeeds.
+- **Reload:** after a full page reload the `/summarize` turn, its 25 ms tool card and the third artifact came back from MongoDB (5 message rows, 3 artifacts).
+- **Not verified:** a real Groq completion, since no key exists in this workspace.
+
+```bash
+npm run lint
+npm run build        # tsc -b && vite build
+curl http://localhost:8787/api/health
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+| ------- | --- |
+| Boot screen says “Backend unreachable” | Start the API (`npm run dev:server`) and check `http://localhost:8787/api/health`. |
+| API exits with “MongoDB is unreachable” | Start MongoDB (service, Docker, or Atlas URI in `server/.env`). |
+| `E11000 duplicate key … userId_1_sessionId_1` | Two concurrent seed posts. Fixed by idempotent create + a shared boot promise; reload to reseed. |
+| Chat replies with the `GROQ_API_KEY` message | Put the key in `server/.env` and restart `npm run dev:server`; tools still work without it. |
+| Port 8787 already in use | Set `PORT` in `server/.env` and `API_PROXY_TARGET` in the shell before `npm run dev`. |
+| Tokens invalid after restart | Set a stable `AUTH_SECRET`; the ephemeral fallback rotates on boot. |
 
 ---
 
@@ -246,10 +231,11 @@ Defined once in `src/index.css` under `@theme`:
 | Phase | Scope |
 | ----- | ----- |
 | 1 | Chat UI, mock sessions, tool cards, action log, composer |
-| 2 | Streaming transport, aborted/stopped states, tool→artifact events, localStorage persistence, delete/reset, copy |
-| **3 — current** | Live Groq SSE streaming behind the same event contract, command-aware system prompts, thread history, key/rate-limit messaging |
-| 4 | Server-side proxy for the API key, real tool execution, auth, multi-user sync |
+| 2 | Client streaming engine, stopped states, artifacts, localStorage |
+| 3 | Live Groq SSE in the browser, command-aware prompts |
+| **4 — current** | Express proxy, server-held key, real tools, MongoDB sync, auth foundation |
+| 5 | Sign-in UI, server-side rate limits, streamed tool progress, deployment |
 
-## Out of scope for Phase 3
+## Out of scope for Phase 4
 
-Backend proxy, auth, server-side persistence, real file/tool execution, token-level usage accounting, conversation export, and full markdown (tables, images, syntax highlighting).
+OAuth/social login, refresh tokens, websocket presence, multi-device live sync, background jobs, and production deployment manifests.
