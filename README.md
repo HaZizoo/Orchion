@@ -6,7 +6,9 @@ A real-time chat workspace for a task-executing AI agent — built for developer
 
 ## Visual Preview
 
-Add screenshots or a short GIF under `docs/` when a deployable environment is available.
+The workspace shows streamed agent output alongside structured artifacts produced by transcript tools.
+
+![Orchion agent workspace](docs/screenshots/agent-workspace.png)
 
 ## System Architecture
 
