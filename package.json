@@ -11,6 +11,7 @@
     "start": "node server/index.js",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "node --test server/tools/index.test.js",
     "preview": "vite preview"
   },
   "dependencies": {
