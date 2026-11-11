@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Orchion architecture</title>
+<body><h1>Orchion runtime architecture</h1><pre>Browser → React client → Express API → MongoDB
+                              ├→ transcript tools → npm registry
+                              └→ Groq SSE → streamed browser events</pre>
+<p>Bearer tokens scope data queries to a user; the Groq key remains server-side.</p></body></html>

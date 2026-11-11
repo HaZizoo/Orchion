@@ -2,6 +2,26 @@
 
 A real-time chat workspace for a task-executing AI agent — built for developers who want to watch the work, not just the answer.
 
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white) ![Express](https://img.shields.io/badge/Express-5-000000?logo=express) ![MongoDB](https://img.shields.io/badge/MongoDB-8-47A248?logo=mongodb&logoColor=white)
+
+## Visual Preview
+
+Add screenshots or a short GIF under `docs/` when a deployable environment is available.
+
+## System Architecture
+
+```mermaid
+flowchart LR
+  B[Browser] --> R[React client]
+  R --> E[Express API]
+  E --> M[(MongoDB)]
+  E --> T[Transcript tools]
+  T --> N[npm registry]
+  E --> G[Groq SSE]
+```
+
+See the [interactive architecture map](docs/architecture.html). The client sees a single SSE transport while the API keeps model credentials and persistence controls server-side.
+
 > **Phase 4 — full-stack.** Orchion is now a React client plus an Express API. The Groq key lives only on the server, slash commands execute real tools that inspect the stored transcript (and the npm registry), and every thread is saved to MongoDB against an authenticated user.
 
 ---
